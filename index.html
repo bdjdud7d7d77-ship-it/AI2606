@@ -1,1 +1,170 @@
-a
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>차곡차곡 학습노트</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <div class="page">
+    <aside class="sidebar">
+      <div class="profile">
+        <div class="profile-icon">📚</div>
+        <div>
+          <h1>차곡차곡<br />학습노트</h1>
+          <p>배운 내용을 정리하는 나만의 공간</p>
+        </div>
+      </div>
+
+      <nav class="menu" aria-label="주요 메뉴">
+        <a href="#today" class="active">🏠 홈</a>
+        <a href="#categories">🗂️ 학습 카테고리</a>
+        <a href="#recent">🕒 최근 학습</a>
+        <a href="#terms">🔎 용어 정리</a>
+        <a href="#goal">🌱 성장 기록</a>
+      </nav>
+
+      <div class="sidebar-card">
+        <span>오늘의 한 줄</span>
+        <p>작게 배워도 꾸준히 쌓이면 나만의 지식이 됩니다.</p>
+      </div>
+    </aside>
+
+    <main class="content">
+      <section class="hero" id="today">
+        <div class="hero-label">My Learning Archive</div>
+        <h2>오늘 배운 내용을<br />보기 좋게 정리하는 학습 홈페이지</h2>
+        <p>
+          AI, 엑셀, 문서 작성, 홈페이지 제작 등 직장 생활과 자기계발에 필요한 내용을
+          주제별로 차곡차곡 기록합니다.
+        </p>
+
+        <div class="hero-actions">
+          <a href="#recent" class="button primary">최근 학습 보기</a>
+          <a href="#categories" class="button secondary">주제별 노트 보기</a>
+        </div>
+      </section>
+
+      <section class="summary-grid" aria-label="학습 현황 요약">
+        <article>
+          <strong>12</strong>
+          <span>정리한 노트</span>
+        </article>
+        <article>
+          <strong>5</strong>
+          <span>학습 주제</span>
+        </article>
+        <article>
+          <strong>3</strong>
+          <span>실습 기록</span>
+        </article>
+      </section>
+
+      <section class="section" id="categories">
+        <div class="section-title">
+          <span>🗂️</span>
+          <h3>학습 카테고리</h3>
+        </div>
+
+        <div class="card-grid">
+          <article class="note-card">
+            <div class="card-icon">🤖</div>
+            <h4>AI 활용 노트</h4>
+            <p>프롬프트 작성법, 업무 자동화, AI 도구 활용법을 정리합니다.</p>
+            <div class="tags">
+              <span>#AI</span>
+              <span>#프롬프트</span>
+            </div>
+          </article>
+
+          <article class="note-card">
+            <div class="card-icon">📊</div>
+            <h4>엑셀 실습 기록</h4>
+            <p>장부 만들기, 함수, 표 정리, 데이터 관리 방법을 기록합니다.</p>
+            <div class="tags">
+              <span>#엑셀</span>
+              <span>#업무관리</span>
+            </div>
+          </article>
+
+          <article class="note-card">
+            <div class="card-icon">💻</div>
+            <h4>홈페이지 제작</h4>
+            <p>HTML, CSS, 화면 구성, 디자인 연습 과정을 정리합니다.</p>
+            <div class="tags">
+              <span>#HTML</span>
+              <span>#CSS</span>
+            </div>
+          </article>
+
+          <article class="note-card">
+            <div class="card-icon">✍️</div>
+            <h4>글쓰기와 문서 작성</h4>
+            <p>이메일, 보고서, 발표 자료, 업무 문서 작성법을 모아둡니다.</p>
+            <div class="tags">
+              <span>#문서작성</span>
+              <span>#이메일</span>
+            </div>
+          </article>
+        </div>
+      </section>
+
+      <section class="section two-column">
+        <div id="recent">
+          <div class="section-title">
+            <span>🕒</span>
+            <h3>최근 학습 기록</h3>
+          </div>
+
+          <div class="timeline">
+            <article>
+              <time>2026.07.03</time>
+              <h4>노션 느낌의 학습 노트 홈페이지 구상</h4>
+              <p>메뉴 구조, 카드형 디자인, 학습 카테고리를 정리했습니다.</p>
+            </article>
+            <article>
+              <time>2026.07.02</time>
+              <h4>무인매장 딥리서치 프롬프트 정리</h4>
+              <p>주제 분석과 발표 자료 제작을 위한 프롬프트를 설계했습니다.</p>
+            </article>
+            <article>
+              <time>2026.07.01</time>
+              <h4>사무 이메일 작성 도우미 프롬프트</h4>
+              <p>맞춤법, 문법, 상황별 말투를 반영하는 프롬프트를 정리했습니다.</p>
+            </article>
+          </div>
+        </div>
+
+        <aside class="memo-box" id="terms">
+          <div class="section-title compact">
+            <span>🔎</span>
+            <h3>용어 정리</h3>
+          </div>
+          <dl>
+            <dt>HTML</dt>
+            <dd>홈페이지의 뼈대를 만드는 언어</dd>
+            <dt>CSS</dt>
+            <dd>글자, 색상, 여백 등 디자인을 담당하는 언어</dd>
+            <dt>프롬프트</dt>
+            <dd>AI에게 원하는 답변을 얻기 위해 입력하는 요청문</dd>
+          </dl>
+        </aside>
+      </section>
+
+      <section class="section goal" id="goal">
+        <div>
+          <div class="section-title">
+            <span>🌱</span>
+            <h3>나의 성장 기록</h3>
+          </div>
+          <p>
+            처음부터 완벽하게 만들기보다, 배운 내용을 하나씩 정리하며 나만의 지식창고를 완성해 갑니다.
+            오늘의 작은 기록이 내일의 실력이 됩니다.
+          </p>
+        </div>
+      </section>
+    </main>
+  </div>
+</body>
+</html>
