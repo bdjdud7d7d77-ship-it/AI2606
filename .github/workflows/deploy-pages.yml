@@ -1,0 +1,76 @@
+name: GitHub Pages 배포
+
+on:
+  push:
+    branches: ["main"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: "pages"
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 저장소 가져오기
+        uses: actions/checkout@v4
+
+      - name: Node.js 설정
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: GitHub Pages 설정
+        uses: actions/configure-pages@v5
+
+      - name: 배포 하위 경로 설정
+        shell: bash
+        env:
+          CONFIGURED_BASE_PATH: ${{ vars.PAGES_BASE_PATH }}
+        run: |
+          repository_name="${GITHUB_REPOSITORY#*/}"
+          repository_name_lower="${repository_name,,}"
+          owner_site_name="${GITHUB_REPOSITORY_OWNER,,}.github.io"
+
+          if [[ "$CONFIGURED_BASE_PATH" == "/" ]]; then
+            base_path=""
+          elif [[ -n "$CONFIGURED_BASE_PATH" ]]; then
+            base_path="$CONFIGURED_BASE_PATH"
+            [[ "$base_path" == /* ]] || base_path="/$base_path"
+            base_path="${base_path%/}"
+          elif [[ "$repository_name_lower" == "$owner_site_name" ]]; then
+            base_path=""
+          else
+            base_path="/$repository_name"
+          fi
+
+          echo "NEXT_PUBLIC_BASE_PATH=$base_path" >> "$GITHUB_ENV"
+
+      - name: 패키지 설치
+        run: npm ci
+
+      - name: 정적 사이트 빌드
+        run: npm run build
+
+      - name: Pages 배포 파일 업로드
+        uses: actions/upload-pages-artifact@v4
+        with:
+          path: ./out
+
+  deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
+      - name: GitHub Pages에 배포
+        id: deployment
+        uses: actions/deploy-pages@v4
