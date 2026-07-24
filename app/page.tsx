@@ -11,12 +11,13 @@ type Question = {
   question: string;
   choices: string[];
   answer: number;
-  explanation: string;
+  shortExplanation: string;
+  detailedExplanation: string;
   sourceId: string;
   verified: boolean;
 };
 
-type Screen = "home" | "quiz" | "result" | "review";
+type Screen = "home" | "units" | "quiz" | "result" | "review";
 
 type HistoryItem = {
   id: number;
@@ -24,16 +25,26 @@ type HistoryItem = {
   score: number;
   correct: number;
   total: number;
+  title?: string;
+};
+
+type QuizResult = {
+  correct: number;
+  total: number;
+  score: number;
+  wrong: Question[];
 };
 
 const questions = questionData as Question[];
-const HISTORY_KEY = "ace-cbt-history-v1";
-const WRONG_KEY = "ace-cbt-wrong-v1";
+const units = Array.from(new Set(questions.map((question) => question.unit)));
+const HISTORY_KEY = "ace-cbt-history-v2";
+const WRONG_KEY = "ace-cbt-wrong-v2";
+const WRONG_NOTES_KEY = "ace-cbt-wrong-notes-v1";
+const EXCLUDED_KEY = "ace-cbt-excluded-v1";
 
 const navItems = [
   { key: "home", icon: "⌂", label: "학습 홈" },
-  { key: "quiz", icon: "▣", label: "문제 풀이" },
-  { key: "exam", icon: "◷", label: "모의고사" },
+  { key: "units", icon: "▣", label: "문제 풀이" },
   { key: "review", icon: "✓", label: "오답노트" },
 ];
 
@@ -45,55 +56,74 @@ function formatTime(seconds: number) {
   return `${minute}:${second}`;
 }
 
+function readStorage<T>(key: string, fallback: T): T {
+  try {
+    const stored = window.localStorage.getItem(key);
+    return stored ? (JSON.parse(stored) as T) : fallback;
+  } catch {
+    return fallback;
+  }
+}
+
+function writeStorage(key: string, value: unknown) {
+  try {
+    window.localStorage.setItem(key, JSON.stringify(value));
+  } catch {
+    // 저장소가 차단되어도 현재 학습은 계속 진행합니다.
+  }
+}
+
 export default function Home() {
   const [screen, setScreen] = useState<Screen>("home");
+  const [quizQuestions, setQuizQuestions] = useState<Question[]>(questions);
+  const [quizTitle, setQuizTitle] = useState("전체 문제");
   const [current, setCurrent] = useState(0);
   const [answers, setAnswers] = useState<Record<string, number>>({});
   const [bookmarks, setBookmarks] = useState<string[]>([]);
+  const [revealedIds, setRevealedIds] = useState<string[]>([]);
   const [timeLeft, setTimeLeft] = useState(8 * 60);
   const [showSubmit, setShowSubmit] = useState(false);
   const [history, setHistory] = useState<HistoryItem[]>([]);
   const [wrongIds, setWrongIds] = useState<string[]>([]);
+  const [wrongNotes, setWrongNotes] = useState<Record<string, string>>({});
+  const [excludedIds, setExcludedIds] = useState<string[]>([]);
+  const [noteOpenId, setNoteOpenId] = useState<string | null>(null);
+  const [message, setMessage] = useState("");
 
-  const answeredCount = Object.keys(answers).length;
-  const currentQuestion = questions[current];
+  const activeQuestions = useMemo(
+    () => questions.filter((question) => !excludedIds.includes(question.id)),
+    [excludedIds],
+  );
+  const answeredCount = quizQuestions.filter(
+    (question) => answers[question.id] !== undefined,
+  ).length;
+  const currentQuestion = quizQuestions[current];
   const isSubmitOpen =
     showSubmit || (screen === "quiz" && timeLeft <= 0);
 
-  const result = useMemo(() => {
-    const correct = questions.filter(
+  const result = useMemo<QuizResult>(() => {
+    const correct = quizQuestions.filter(
       (question) => answers[question.id] === question.answer,
     ).length;
+    const total = quizQuestions.length;
     return {
       correct,
-      total: questions.length,
-      score: Math.round((correct / questions.length) * 100),
-      wrong: questions.filter(
+      total,
+      score: total ? Math.round((correct / total) * 100) : 0,
+      wrong: quizQuestions.filter(
         (question) => answers[question.id] !== question.answer,
       ),
     };
-  }, [answers]);
+  }, [answers, quizQuestions]);
 
   useEffect(() => {
     const restoreTimer = window.setTimeout(() => {
-      const storedHistory = window.localStorage.getItem(HISTORY_KEY);
-      const storedWrong = window.localStorage.getItem(WRONG_KEY);
-
-      if (storedHistory) {
-        try {
-          setHistory(JSON.parse(storedHistory));
-        } catch {
-          window.localStorage.removeItem(HISTORY_KEY);
-        }
-      }
-
-      if (storedWrong) {
-        try {
-          setWrongIds(JSON.parse(storedWrong));
-        } catch {
-          window.localStorage.removeItem(WRONG_KEY);
-        }
-      }
+      const legacyHistory = readStorage<HistoryItem[]>("ace-cbt-history-v1", []);
+      const legacyWrong = readStorage<string[]>("ace-cbt-wrong-v1", []);
+      setHistory(readStorage<HistoryItem[]>(HISTORY_KEY, legacyHistory));
+      setWrongIds(readStorage<string[]>(WRONG_KEY, legacyWrong));
+      setWrongNotes(readStorage<Record<string, string>>(WRONG_NOTES_KEY, {}));
+      setExcludedIds(readStorage<string[]>(EXCLUDED_KEY, []));
     }, 0);
 
     return () => window.clearTimeout(restoreTimer);
@@ -101,28 +131,66 @@ export default function Home() {
 
   useEffect(() => {
     if (screen !== "quiz" || showSubmit) return;
-    if (timeLeft <= 0) return;
 
     const timer = window.setInterval(() => {
-      setTimeLeft((value) => value - 1);
+      setTimeLeft((value) => Math.max(0, value - 1));
     }, 1000);
 
     return () => window.clearInterval(timer);
-  }, [screen, showSubmit, timeLeft]);
+  }, [screen, showSubmit]);
 
-  const startQuiz = () => {
+  useEffect(() => {
+    if (!message) return;
+    const timer = window.setTimeout(() => setMessage(""), 2400);
+    return () => window.clearTimeout(timer);
+  }, [message]);
+
+  const launchQuiz = (selected: Question[], title: string) => {
+    if (selected.length === 0) {
+      setMessage("풀 수 있는 문제가 없습니다. 제외한 문제를 다시 포함해 주세요.");
+      setScreen("units");
+      return;
+    }
+
+    setQuizQuestions(selected);
+    setQuizTitle(title);
     setAnswers({});
     setCurrent(0);
-    setTimeLeft(8 * 60);
+    setTimeLeft(Math.max(2 * 60, selected.length * 90));
     setShowSubmit(false);
+    setRevealedIds([]);
+    setNoteOpenId(null);
     setScreen("quiz");
   };
 
+  const startQuiz = (unit?: string, excludeId?: string) => {
+    let selected = activeQuestions;
+    if (unit) {
+      selected = selected.filter((question) => question.unit === unit);
+    }
+    if (excludeId) {
+      selected = selected.filter((question) => question.id !== excludeId);
+    }
+    launchQuiz(selected, unit ? `${unit} 단원` : "전체 문제");
+  };
+
+  const startSingleQuestion = (id: string) => {
+    const question = questions.find((item) => item.id === id);
+    if (!question) return;
+    if (excludedIds.includes(id)) {
+      setMessage("제외한 문제입니다. 먼저 다시 포함해 주세요.");
+      return;
+    }
+    launchQuiz([question], `${question.unit} 오답 다시 풀기`);
+  };
+
   const submitQuiz = () => {
-    const wrong = questions
-      .filter((question) => answers[question.id] !== question.answer)
-      .map((question) => question.id);
-    const nextWrong = Array.from(new Set([...wrongIds, ...wrong]));
+    const attemptedIds = quizQuestions.map((question) => question.id);
+    const wrong = result.wrong.map((question) => question.id);
+    const previousUnattemptedWrong = wrongIds.filter(
+      (id) => !attemptedIds.includes(id),
+    );
+    const nextWrong = Array.from(new Set([...previousUnattemptedWrong, ...wrong]));
     const nextHistory: HistoryItem[] = [
       {
         id: Date.now(),
@@ -135,21 +203,22 @@ export default function Home() {
         score: result.score,
         correct: result.correct,
         total: result.total,
+        title: quizTitle,
       },
       ...history,
     ].slice(0, 6);
 
     setWrongIds(nextWrong);
     setHistory(nextHistory);
-    window.localStorage.setItem(WRONG_KEY, JSON.stringify(nextWrong));
-    window.localStorage.setItem(HISTORY_KEY, JSON.stringify(nextHistory));
+    writeStorage(WRONG_KEY, nextWrong);
+    writeStorage(HISTORY_KEY, nextHistory);
     setShowSubmit(false);
     setScreen("result");
   };
 
   const moveScreen = (key: string) => {
     if (key === "home") setScreen("home");
-    if (key === "quiz" || key === "exam") startQuiz();
+    if (key === "units") setScreen("units");
     if (key === "review") setScreen("review");
   };
 
@@ -157,6 +226,41 @@ export default function Home() {
     setBookmarks((items) =>
       items.includes(id) ? items.filter((item) => item !== id) : [...items, id],
     );
+  };
+
+  const toggleAnswer = (id: string) => {
+    setRevealedIds((items) =>
+      items.includes(id) ? items.filter((item) => item !== id) : [...items, id],
+    );
+  };
+
+  const changeWrongNote = (id: string, note: string) => {
+    setWrongNotes((items) => ({ ...items, [id]: note }));
+  };
+
+  const saveWrongNote = (id: string) => {
+    writeStorage(WRONG_NOTES_KEY, wrongNotes);
+    setMessage(wrongNotes[id]?.trim() ? "오답노트를 저장했습니다." : "빈 오답노트를 저장했습니다.");
+  };
+
+  const toggleExcluded = (id: string) => {
+    const isExcluded = excludedIds.includes(id);
+    const nextExcluded = isExcluded
+      ? excludedIds.filter((item) => item !== id)
+      : [...excludedIds, id];
+    setExcludedIds(nextExcluded);
+    writeStorage(EXCLUDED_KEY, nextExcluded);
+    setMessage(
+      isExcluded
+        ? "문제를 다시 풀이 목록에 포함했습니다."
+        : "앞으로 문제 풀이에서 제외합니다.",
+    );
+  };
+
+  const restoreExcluded = () => {
+    setExcludedIds([]);
+    writeStorage(EXCLUDED_KEY, []);
+    setMessage("제외했던 문제를 모두 다시 포함했습니다.");
   };
 
   return (
@@ -175,7 +279,8 @@ export default function Home() {
           {navItems.map((item) => {
             const active =
               (item.key === "home" && screen === "home") ||
-              (item.key === "quiz" && screen === "quiz") ||
+              (item.key === "units" &&
+                (screen === "units" || screen === "quiz" || screen === "result")) ||
               (item.key === "review" && screen === "review");
             return (
               <button
@@ -191,14 +296,9 @@ export default function Home() {
         </nav>
 
         <div className="side-status">
-          <div className="side-status-head">
-            <span>이번 주 학습</span>
-            <strong>68%</strong>
-          </div>
-          <div className="mini-progress">
-            <i style={{ width: "68%" }} />
-          </div>
-          <small>목표까지 2회 남았어요</small>
+          <strong>바로 학습하기</strong>
+          <p>전체 또는 단원별로 문제를 선택할 수 있어요.</p>
+          <button onClick={() => setScreen("units")}>문제 선택 →</button>
         </div>
 
         <div className="profile">
@@ -207,7 +307,6 @@ export default function Home() {
             <strong>나의 학습 공간</strong>
             <small>브라우저 저장 모드</small>
           </span>
-          <span className="more">•••</span>
         </div>
       </aside>
 
@@ -217,48 +316,68 @@ export default function Home() {
             <span className="mobile-brand">ACE STUDY</span>
             <p className="breadcrumb">
               {screen === "home" && "학습 홈"}
-              {screen === "quiz" && "데모 모의고사"}
+              {screen === "units" && "문제 풀이 · 단원 선택"}
+              {screen === "quiz" && quizTitle}
               {screen === "result" && "학습 결과"}
               {screen === "review" && "오답노트"}
             </p>
           </div>
-          <div className="top-actions">
-            <span className="offline-chip">
-              <i /> 내 기기에 안전하게 저장 중
-            </span>
-            <button className="icon-button" aria-label="알림">
-              ♢
-            </button>
-          </div>
+          <span className="offline-chip">
+            <i /> 내 기기에 자동 저장
+          </span>
         </header>
 
         {screen === "home" && (
           <Dashboard
             history={history}
             wrongCount={wrongIds.length}
-            onStart={startQuiz}
+            availableCount={activeQuestions.length}
+            onStart={() => setScreen("units")}
             onReview={() => setScreen("review")}
           />
         )}
 
-        {screen === "quiz" && (
+        {screen === "units" && (
+          <UnitSelection
+            excludedIds={excludedIds}
+            onStartAll={() => startQuiz()}
+            onStartUnit={(unit) => startQuiz(unit)}
+            onRestoreExcluded={restoreExcluded}
+          />
+        )}
+
+        {screen === "quiz" && currentQuestion && (
           <QuizScreen
+            title={quizTitle}
             question={currentQuestion}
+            quizQuestions={quizQuestions}
             current={current}
             answers={answers}
             bookmarks={bookmarks}
             timeLeft={timeLeft}
             answeredCount={answeredCount}
+            isAnswerVisible={revealedIds.includes(currentQuestion.id)}
+            isNoteOpen={noteOpenId === currentQuestion.id}
+            wrongNote={wrongNotes[currentQuestion.id] ?? ""}
             onAnswer={(choice) =>
               setAnswers((items) => ({
                 ...items,
                 [currentQuestion.id]: choice,
               }))
             }
-            onMove={setCurrent}
+            onMove={(index) => {
+              setCurrent(index);
+              setNoteOpenId(null);
+            }}
             onBookmark={() => toggleBookmark(currentQuestion.id)}
+            onToggleAnswer={() => toggleAnswer(currentQuestion.id)}
+            onToggleNote={() =>
+              setNoteOpenId((id) => (id === currentQuestion.id ? null : currentQuestion.id))
+            }
+            onNoteChange={(note) => changeWrongNote(currentQuestion.id, note)}
+            onSaveNote={() => saveWrongNote(currentQuestion.id)}
             onSubmit={() => setShowSubmit(true)}
-            onExit={() => setScreen("home")}
+            onExit={() => setScreen("units")}
           />
         )}
 
@@ -266,30 +385,41 @@ export default function Home() {
           <ResultScreen
             answers={answers}
             result={result}
+            resultQuestions={quizQuestions}
+            wrongNotes={wrongNotes}
+            excludedIds={excludedIds}
             onHome={() => setScreen("home")}
-            onRetry={startQuiz}
+            onRetry={() => launchQuiz(quizQuestions.filter((question) => !excludedIds.includes(question.id)), quizTitle)}
             onReview={() => setScreen("review")}
+            onRelated={(unit, id) => startQuiz(unit, id)}
+            onToggleExcluded={toggleExcluded}
           />
         )}
 
         {screen === "review" && (
           <ReviewScreen
             wrongIds={wrongIds}
-            onStart={startQuiz}
+            wrongNotes={wrongNotes}
+            excludedIds={excludedIds}
+            onStart={() => startQuiz()}
             onHome={() => setScreen("home")}
+            onStartQuestion={startSingleQuestion}
+            onNoteChange={changeWrongNote}
+            onSaveNote={saveWrongNote}
+            onToggleExcluded={toggleExcluded}
           />
         )}
       </main>
 
       {isSubmitOpen && (
         <div className="modal-backdrop" role="presentation">
-          <section className="submit-modal" role="dialog" aria-modal="true">
+          <section className="submit-modal" role="dialog" aria-modal="true" aria-labelledby="submit-title">
             <span className="modal-icon">✓</span>
             <p className="eyebrow">답안 제출 확인</p>
-            <h2>학습을 마칠까요?</h2>
+            <h2 id="submit-title">학습을 마칠까요?</h2>
             <p>
-              총 {questions.length}문제 중 <strong>{answeredCount}문제</strong>에
-              답했습니다. 미응답 {questions.length - answeredCount}문제는 오답으로
+              총 {quizQuestions.length}문제 중 <strong>{answeredCount}문제</strong>에
+              답했습니다. 미응답 {quizQuestions.length - answeredCount}문제는 오답으로
               처리됩니다.
             </p>
             <div className="modal-summary">
@@ -297,7 +427,7 @@ export default function Home() {
                 응답 완료 <strong>{answeredCount}</strong>
               </span>
               <span>
-                미응답 <strong>{questions.length - answeredCount}</strong>
+                미응답 <strong>{quizQuestions.length - answeredCount}</strong>
               </span>
             </div>
             <div className="modal-actions">
@@ -313,6 +443,8 @@ export default function Home() {
           </section>
         </div>
       )}
+
+      {message && <div className="toast" role="status">{message}</div>}
     </div>
   );
 }
@@ -320,11 +452,13 @@ export default function Home() {
 function Dashboard({
   history,
   wrongCount,
+  availableCount,
   onStart,
   onReview,
 }: {
   history: HistoryItem[];
   wrongCount: number;
+  availableCount: number;
   onStart: () => void;
   onReview: () => void;
 }) {
@@ -332,45 +466,19 @@ function Dashboard({
 
   return (
     <div className="page dashboard-page">
-      <section className="welcome-row">
+      <section className="home-quiz-card">
         <div>
-          <p className="eyebrow">PERSONAL LEARNING SYSTEM</p>
-          <h1>오늘도 한 문제씩, 합격에 가까워져요.</h1>
-          <p className="lead">
-            데모 학습문제로 전체 CBT 흐름을 먼저 점검해보세요.
-          </p>
+          <span className="hero-label">오늘의 학습</span>
+          <h1>문제 풀기</h1>
+          <p>전체 문제 또는 원하는 단원을 골라 바로 시작하세요.</p>
+          <button className="button light home-start" onClick={onStart}>
+            문제풀이 시작 <span>→</span>
+          </button>
         </div>
-        <div className="date-badge">
-          <span>오늘</span>
-          <strong>21</strong>
-          <small>JUL · TUE</small>
-        </div>
-      </section>
-
-      <section className="hero-card">
-        <div className="hero-copy">
-          <span className="hero-label">추천 학습</span>
-          <h2>AI 활용 기초 · 데모 모의고사</h2>
-          <p>
-            5문항 · 제한시간 8분 · 자동 채점
-            <br />
-            문항과 기록은 공식 기출이 아닌 프로토타입 검증용입니다.
-          </p>
-          <div className="hero-actions">
-            <button className="button light" onClick={onStart}>
-              지금 시작하기 <span>→</span>
-            </button>
-            <span className="hero-note">예상 소요 5분</span>
-          </div>
-        </div>
-        <div className="hero-visual" aria-hidden="true">
-          <div className="orbit orbit-one" />
-          <div className="orbit orbit-two" />
-          <div className="hero-score">
-            <span>학습 흐름</span>
-            <strong>CBT</strong>
-            <small>QUIZ · SCORE · REVIEW</small>
-          </div>
+        <div className="home-count" aria-label={`풀이 가능 문제 ${availableCount}개`}>
+          <span>풀이 가능</span>
+          <strong>{availableCount}</strong>
+          <small>문제</small>
         </div>
       </section>
 
@@ -380,7 +488,7 @@ function Dashboard({
           <div>
             <p>최근 점수</p>
             <strong>{latest ? `${latest.score}점` : "—"}</strong>
-            <small>{latest ? `${latest.correct}/${latest.total} 정답` : "첫 학습을 시작하세요"}</small>
+            <small>{latest ? `${latest.correct}/${latest.total} 정답` : "첫 문제를 풀어보세요"}</small>
           </div>
         </article>
         <article className="stat-card">
@@ -388,97 +496,140 @@ function Dashboard({
           <div>
             <p>누적 학습</p>
             <strong>{history.length}회</strong>
-            <small>브라우저에 자동 저장</small>
+            <small>최근 6회 기록</small>
           </div>
         </article>
-        <article className="stat-card clickable" onClick={onReview}>
+        <button className="stat-card clickable" onClick={onReview}>
           <span className="stat-icon peach">!</span>
-          <div>
-            <p>오답 문제</p>
+          <span className="stat-copy">
+            <span>내 오답노트</span>
             <strong>{wrongCount}개</strong>
-            <small>눌러서 다시 확인하기</small>
-          </div>
+            <small>확인하고 다시 풀기</small>
+          </span>
           <span className="card-arrow">→</span>
-        </article>
+        </button>
       </section>
 
-      <section className="content-grid">
-        <article className="panel history-panel">
-          <div className="panel-head">
-            <div>
-              <p className="eyebrow">RECENT ACTIVITY</p>
-              <h3>최근 학습 기록</h3>
-            </div>
-            <span className="text-button">최근 6회</span>
-          </div>
-          {history.length === 0 ? (
-            <div className="empty-state">
-              <span>◎</span>
-              <strong>아직 저장된 기록이 없습니다.</strong>
-              <p>첫 번째 데모 모의고사를 완료하면 이곳에 기록됩니다.</p>
-            </div>
-          ) : (
-            <div className="history-list">
-              {history.map((item) => (
-                <div className="history-item" key={item.id}>
-                  <span className="history-dot" />
-                  <div>
-                    <strong>AI 활용 기초 · 데모</strong>
-                    <small>{item.date}</small>
-                  </div>
-                  <span className="history-score">{item.score}점</span>
-                </div>
-              ))}
-            </div>
-          )}
-        </article>
+      {latest && (
+        <section className="recent-strip">
+          <span>최근 학습</span>
+          <strong>{latest.title ?? "전체 문제"}</strong>
+          <small>{latest.date}</small>
+          <b>{latest.score}점</b>
+        </section>
+      )}
+    </div>
+  );
+}
 
-        <article className="panel source-panel">
-          <div className="panel-head">
-            <div>
-              <p className="eyebrow">SOURCE STATUS</p>
-              <h3>자료 검증 상태</h3>
-            </div>
-          </div>
-          <div className="source-chart">
-            <div className="donut"><span>DEMO</span></div>
-            <div className="source-legend">
-              <p><i className="legend-dot green" /> 데모 학습문제 <strong>5</strong></p>
-              <p><i className="legend-dot gray" /> 공식 확인 문항 <strong>0</strong></p>
-            </div>
-          </div>
-          <div className="notice-box">
-            <span>i</span>
-            <p>공식 출처가 확인되기 전에는 기출문제로 표시하지 않습니다.</p>
-          </div>
-        </article>
+function UnitSelection({
+  excludedIds,
+  onStartAll,
+  onStartUnit,
+  onRestoreExcluded,
+}: {
+  excludedIds: string[];
+  onStartAll: () => void;
+  onStartUnit: (unit: string) => void;
+  onRestoreExcluded: () => void;
+}) {
+  const availableTotal = questions.length - excludedIds.length;
+
+  return (
+    <div className="page units-page">
+      <section className="page-heading">
+        <div>
+          <p className="eyebrow">CHOOSE A UNIT</p>
+          <h1>어떤 문제를 풀까요?</h1>
+          <p>전체 문제 또는 단원별 문제를 선택할 수 있습니다.</p>
+        </div>
+        {excludedIds.length > 0 && (
+          <button className="text-action" onClick={onRestoreExcluded}>
+            제외한 {excludedIds.length}문제 다시 포함
+          </button>
+        )}
+      </section>
+
+      <button className="all-quiz-card" onClick={onStartAll} disabled={availableTotal === 0}>
+        <span className="all-icon">A</span>
+        <span>
+          <small>전체 학습</small>
+          <strong>모든 단원 문제 풀기</strong>
+          <em>{availableTotal}문제 · 자동 채점</em>
+        </span>
+        <b>시작 →</b>
+      </button>
+
+      <section className="unit-grid" aria-label="단원 목록">
+        {units.map((unit, index) => {
+          const total = questions.filter((question) => question.unit === unit).length;
+          const excluded = questions.filter(
+            (question) => question.unit === unit && excludedIds.includes(question.id),
+          ).length;
+          const available = total - excluded;
+          return (
+            <article className="unit-card" key={unit}>
+              <span className={`unit-number color-${index + 1}`}>{index + 1}</span>
+              <div>
+                <small>UNIT {String(index + 1).padStart(2, "0")}</small>
+                <h2>{unit}</h2>
+                <p>{available}문제{excluded > 0 ? ` · ${excluded}문제 제외됨` : ""}</p>
+              </div>
+              <button
+                className="button primary"
+                onClick={() => onStartUnit(unit)}
+                disabled={available === 0}
+              >
+                단원 풀기
+              </button>
+            </article>
+          );
+        })}
       </section>
     </div>
   );
 }
 
 function QuizScreen({
+  title,
   question,
+  quizQuestions,
   current,
   answers,
   bookmarks,
   timeLeft,
   answeredCount,
+  isAnswerVisible,
+  isNoteOpen,
+  wrongNote,
   onAnswer,
   onMove,
   onBookmark,
+  onToggleAnswer,
+  onToggleNote,
+  onNoteChange,
+  onSaveNote,
   onSubmit,
   onExit,
 }: {
+  title: string;
   question: Question;
+  quizQuestions: Question[];
   current: number;
   answers: Record<string, number>;
   bookmarks: string[];
   timeLeft: number;
   answeredCount: number;
+  isAnswerVisible: boolean;
+  isNoteOpen: boolean;
+  wrongNote: string;
   onAnswer: (choice: number) => void;
   onMove: (index: number) => void;
   onBookmark: () => void;
+  onToggleAnswer: () => void;
+  onToggleNote: () => void;
+  onNoteChange: (note: string) => void;
+  onSaveNote: () => void;
   onSubmit: () => void;
   onExit: () => void;
 }) {
@@ -486,9 +637,9 @@ function QuizScreen({
     <div className="page quiz-page">
       <section className="quiz-heading">
         <div>
-          <p className="eyebrow">DEMO LEARNING TEST</p>
-          <h1>AI 활용 기초 · 데모 모의고사</h1>
-          <p>공식 기출이 아닌 기능 검증용 학습문제입니다.</p>
+          <p className="eyebrow">UNIT LEARNING</p>
+          <h1>{title}</h1>
+          <p>정답을 확인하거나 문제별 오답노트를 작성할 수 있습니다.</p>
         </div>
         <div className={`timer ${timeLeft < 60 ? "danger" : ""}`}>
           <span>남은 시간</span>
@@ -509,11 +660,46 @@ function QuizScreen({
               {bookmarks.includes(question.id) ? "★" : "☆"}
             </button>
           </div>
+
+          <div className="study-tools">
+            <button className={isNoteOpen ? "active" : ""} onClick={onToggleNote}>
+              ✎ 내 오답노트 {wrongNote.trim() ? "· 작성됨" : ""}
+            </button>
+            <button className={isAnswerVisible ? "active" : ""} onClick={onToggleAnswer}>
+              {isAnswerVisible ? "정답 닫기" : "정답 보기"}
+            </button>
+          </div>
+
+          {isNoteOpen && (
+            <section className="note-editor">
+              <label htmlFor={`note-${question.id}`}>이 문제에서 기억할 점</label>
+              <textarea
+                id={`note-${question.id}`}
+                value={wrongNote}
+                onChange={(event) => onNoteChange(event.target.value)}
+                placeholder="틀린 이유나 다음에 확인할 기준을 적어보세요."
+              />
+              <button className="button primary compact" onClick={onSaveNote}>
+                오답노트 저장
+              </button>
+            </section>
+          )}
+
+          {isAnswerVisible && (
+            <section className="answer-reveal" aria-live="polite">
+              <span>정답 {question.answer + 1}번</span>
+              <strong>{question.choices[question.answer]}</strong>
+              <p>{question.shortExplanation}</p>
+            </section>
+          )}
+
           <h2>{question.question}</h2>
           <div className="choice-list">
             {question.choices.map((choice, index) => (
               <button
-                className={`choice ${answers[question.id] === index ? "selected" : ""}`}
+                className={`choice ${answers[question.id] === index ? "selected" : ""} ${
+                  isAnswerVisible && index === question.answer ? "answer" : ""
+                }`}
                 key={choice}
                 onClick={() => onAnswer(index)}
               >
@@ -531,7 +717,7 @@ function QuizScreen({
             >
               ← 이전 문제
             </button>
-            {current < questions.length - 1 ? (
+            {current < quizQuestions.length - 1 ? (
               <button className="button primary" onClick={() => onMove(current + 1)}>
                 다음 문제 →
               </button>
@@ -546,16 +732,18 @@ function QuizScreen({
         <aside className="answer-panel">
           <div className="answer-panel-head">
             <h3>답안 현황</h3>
-            <strong>{answeredCount}/{questions.length}</strong>
+            <strong>{answeredCount}/{quizQuestions.length}</strong>
           </div>
           <div className="answer-progress">
-            <i style={{ width: `${(answeredCount / questions.length) * 100}%` }} />
+            <i style={{ width: `${(answeredCount / quizQuestions.length) * 100}%` }} />
           </div>
           <div className="answer-grid">
-            {questions.map((item, index) => (
+            {quizQuestions.map((item, index) => (
               <button
                 key={item.id}
-                className={`${index === current ? "current" : ""} ${answers[item.id] !== undefined ? "answered" : ""}`}
+                className={`${index === current ? "current" : ""} ${
+                  answers[item.id] !== undefined ? "answered" : ""
+                }`}
                 onClick={() => onMove(index)}
               >
                 {index + 1}
@@ -568,7 +756,7 @@ function QuizScreen({
             <span><i className="legend" />미응답</span>
           </div>
           <button className="submit-wide" onClick={onSubmit}>답안 제출</button>
-          <button className="exit-link" onClick={onExit}>학습 홈으로 나가기</button>
+          <button className="exit-link" onClick={onExit}>단원 선택으로 나가기</button>
         </aside>
       </div>
     </div>
@@ -578,15 +766,25 @@ function QuizScreen({
 function ResultScreen({
   answers,
   result,
+  resultQuestions,
+  wrongNotes,
+  excludedIds,
   onHome,
   onRetry,
   onReview,
+  onRelated,
+  onToggleExcluded,
 }: {
   answers: Record<string, number>;
-  result: { correct: number; total: number; score: number; wrong: Question[] };
+  result: QuizResult;
+  resultQuestions: Question[];
+  wrongNotes: Record<string, string>;
+  excludedIds: string[];
   onHome: () => void;
   onRetry: () => void;
   onReview: () => void;
+  onRelated: (unit: string, id: string) => void;
+  onToggleExcluded: (id: string) => void;
 }) {
   const circumference = 2 * Math.PI * 54;
   const dash = (result.score / 100) * circumference;
@@ -609,8 +807,7 @@ function ResultScreen({
         </div>
         <div className="result-copy">
           <p className="eyebrow">LEARNING RESULT</p>
-          <h1>{result.score >= 80 ? "좋아요, 핵심 개념을 잘 이해했어요." : "오답을 확인하면 다음 점수가 달라져요."}</h1>
-          <p>데모 문제 기준 결과이며 실제 자격시험의 합격 여부와 관계없습니다.</p>
+          <h1>{result.score >= 80 ? "핵심 개념을 잘 이해했어요." : "해설을 확인하고 관련 문제로 익혀보세요."}</h1>
           <div className="result-metrics">
             <span>정답 <strong>{result.correct}</strong></span>
             <span>오답·미응답 <strong>{result.total - result.correct}</strong></span>
@@ -618,7 +815,7 @@ function ResultScreen({
           </div>
           <div className="result-actions">
             <button className="button primary" onClick={onReview}>오답노트 보기</button>
-            <button className="button secondary" onClick={onRetry}>다시 풀기</button>
+            <button className="button secondary" onClick={onRetry}>같은 범위 다시 풀기</button>
             <button className="text-link" onClick={onHome}>학습 홈</button>
           </div>
         </div>
@@ -633,10 +830,21 @@ function ResultScreen({
           <span className="demo-badge">데모 학습문제</span>
         </div>
         <div className="solution-list">
-          {questions.map((question, index) => {
+          {resultQuestions.map((question, index) => {
             const isCorrect = answers[question.id] === question.answer;
+            const isExcluded = excludedIds.includes(question.id);
+            const relatedCount = questions.filter(
+              (item) =>
+                item.unit === question.unit &&
+                item.id !== question.id &&
+                !excludedIds.includes(item.id),
+            ).length;
             return (
-              <details className={`solution-item ${isCorrect ? "correct" : "wrong"}`} key={question.id} open={!isCorrect}>
+              <details
+                className={`solution-item ${isCorrect ? "correct" : "wrong"}`}
+                key={question.id}
+                open={!isCorrect}
+              >
                 <summary>
                   <span className="result-mark">{isCorrect ? "✓" : "!"}</span>
                   <div>
@@ -646,9 +854,44 @@ function ResultScreen({
                   <span className="solution-status">{isCorrect ? "정답" : "오답"}</span>
                 </summary>
                 <div className="solution-body">
-                  <p><b>내 답</b> {answers[question.id] !== undefined ? question.choices[answers[question.id]] : "미응답"}</p>
-                  <p><b>정답</b> {question.choices[question.answer]}</p>
-                  <div className="explanation"><b>해설</b><p>{question.explanation}</p></div>
+                  <div className="answer-comparison">
+                    <p><b>내 답</b> {answers[question.id] !== undefined ? question.choices[answers[question.id]] : "미응답"}</p>
+                    <p><b>정답</b> {question.choices[question.answer]}</p>
+                  </div>
+
+                  <div className="explanation simple">
+                    <b>간단 해설</b>
+                    <p>{question.shortExplanation}</p>
+                  </div>
+                  {!isCorrect && (
+                    <div className="explanation detailed">
+                      <b>자세한 해설</b>
+                      <p>{question.detailedExplanation}</p>
+                    </div>
+                  )}
+
+                  {wrongNotes[question.id]?.trim() && (
+                    <div className="saved-note">
+                      <b>내 오답노트</b>
+                      <p>{wrongNotes[question.id]}</p>
+                    </div>
+                  )}
+
+                  <div className="solution-actions">
+                    <button
+                      className="button primary"
+                      onClick={() => onRelated(question.unit, question.id)}
+                      disabled={relatedCount === 0}
+                    >
+                      관련 문제 더 풀어보기 {relatedCount > 0 ? `(${relatedCount})` : ""}
+                    </button>
+                    <button
+                      className={`button ${isExcluded ? "restore" : "exclude"}`}
+                      onClick={() => onToggleExcluded(question.id)}
+                    >
+                      {isExcluded ? "문제 풀이에 다시 포함" : "문제 풀이에서 제외"}
+                    </button>
+                  </div>
                   <small>출처 상태: {question.sourceId} · 검증 전 데모 데이터</small>
                 </div>
               </details>
@@ -662,12 +905,24 @@ function ResultScreen({
 
 function ReviewScreen({
   wrongIds,
+  wrongNotes,
+  excludedIds,
   onStart,
   onHome,
+  onStartQuestion,
+  onNoteChange,
+  onSaveNote,
+  onToggleExcluded,
 }: {
   wrongIds: string[];
+  wrongNotes: Record<string, string>;
+  excludedIds: string[];
   onStart: () => void;
   onHome: () => void;
+  onStartQuestion: (id: string) => void;
+  onNoteChange: (id: string, note: string) => void;
+  onSaveNote: (id: string) => void;
+  onToggleExcluded: (id: string) => void;
 }) {
   const wrongQuestions = questions.filter((question) => wrongIds.includes(question.id));
 
@@ -676,36 +931,70 @@ function ReviewScreen({
       <section className="review-heading">
         <div>
           <p className="eyebrow">WRONG ANSWER NOTE</p>
-          <h1>틀린 문제를 다시 이해하는 시간</h1>
-          <p>최근 학습에서 틀렸거나 답하지 않은 데모 문항을 모았습니다.</p>
+          <h1>내 오답노트</h1>
+          <p>틀린 이유를 기록하고 문제별로 다시 풀어보세요.</p>
         </div>
-        <button className="button primary" onClick={onStart}>전체 다시 풀기</button>
+        <button className="button primary" onClick={onStart}>전체 문제 풀기</button>
       </section>
 
       {wrongQuestions.length === 0 ? (
         <section className="panel empty-review">
           <span>✓</span>
           <h2>저장된 오답이 없습니다.</h2>
-          <p>데모 모의고사를 풀면 틀린 문제가 자동으로 기록됩니다.</p>
+          <p>문제를 풀면 틀린 문항이 자동으로 모입니다.</p>
           <div>
-            <button className="button primary" onClick={onStart}>데모 문제 풀기</button>
+            <button className="button primary" onClick={onStart}>문제 풀기</button>
             <button className="button secondary" onClick={onHome}>학습 홈</button>
           </div>
         </section>
       ) : (
         <section className="review-list">
-          {wrongQuestions.map((question, index) => (
-            <article className="panel review-card" key={question.id}>
-              <div className="review-number">{index + 1}</div>
-              <div>
-                <p className="review-meta">{question.subject} · {question.unit}</p>
-                <h2>{question.question}</h2>
-                <div className="review-answer"><span>정답</span>{question.choices[question.answer]}</div>
-                <div className="review-explanation"><span>해설</span><p>{question.explanation}</p></div>
-              </div>
-              <span className="demo-badge">학습문제</span>
-            </article>
-          ))}
+          {wrongQuestions.map((question, index) => {
+            const isExcluded = excludedIds.includes(question.id);
+            return (
+              <article className="panel review-card" key={question.id}>
+                <div className="review-number">{index + 1}</div>
+                <div className="review-content">
+                  <p className="review-meta">{question.subject} · {question.unit}</p>
+                  <h2>{question.question}</h2>
+                  <div className="review-answer">
+                    <span>정답</span>{question.choices[question.answer]}
+                  </div>
+                  <div className="review-explanation">
+                    <span>해설</span><p>{question.detailedExplanation}</p>
+                  </div>
+                  <label className="review-note-label" htmlFor={`review-note-${question.id}`}>
+                    내가 작성한 오답노트
+                  </label>
+                  <textarea
+                    id={`review-note-${question.id}`}
+                    className="review-note"
+                    value={wrongNotes[question.id] ?? ""}
+                    onChange={(event) => onNoteChange(question.id, event.target.value)}
+                    placeholder="틀린 이유나 기억할 점을 적어보세요."
+                  />
+                  <div className="review-actions">
+                    <button className="button secondary" onClick={() => onSaveNote(question.id)}>
+                      노트 저장
+                    </button>
+                    <button
+                      className="button primary"
+                      onClick={() => onStartQuestion(question.id)}
+                      disabled={isExcluded}
+                    >
+                      {isExcluded ? "풀이에서 제외됨" : "이 문제 다시 풀기"}
+                    </button>
+                    {isExcluded && (
+                      <button className="text-action" onClick={() => onToggleExcluded(question.id)}>
+                        다시 포함하기
+                      </button>
+                    )}
+                  </div>
+                </div>
+                <span className="demo-badge">학습문제</span>
+              </article>
+            );
+          })}
         </section>
       )}
     </div>
